@@ -8,17 +8,18 @@ list(APPEND PyDIPdeps "${DIP_PYTHON_PY}")
 # Insert DIP.dll location into __init__.py
 set(DIP_PYDIP_RELATIVE_LOCATION OFF CACHE BOOL "PyDIP uses relative path to find the DIPlib library (turn on for binary distribution, keep off for personal builds)")
 if(DIP_PYDIP_RELATIVE_LOCATION)
-   file(RELATIVE_PATH diplib_dir "${PYDIP_INSTALL_PATH}/PyDIP" "${CMAKE_INSTALL_PREFIX}/${LIBRARY_DESTINATION}")
-   configure_file("${CMAKE_CURRENT_LIST_DIR}/src/__init__.py.distrib" "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" @ONLY) # uses ${diplib_dir}
+   file(RELATIVE_PATH diplib_dir "${PYDIP_INSTALL_PATH}/PyDIP" "${CMAKE_INSTALL_PREFIX}/${LIBRARY_DESTINATION}") # this variable also used in __init__.py
+   set(py_init_use_relative_location True) # set variable used in __init__.py
    if(APPLE)
       set(rpath "@loader_path/${diplib_dir}")
    else()
       set(rpath "$ORIGIN/${diplib_dir}")
    endif()
 else()
-   configure_file("${CMAKE_CURRENT_LIST_DIR}/src/__init__.py.in" "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" @ONLY) # uses ${CMAKE_INSTALL_PREFIX}
+   set(py_init_use_relative_location False) # set variable used in __init__.py
    set(rpath "${CMAKE_INSTALL_PREFIX}/${LIBRARY_DESTINATION}")
 endif()
+configure_file("${CMAKE_CURRENT_LIST_DIR}/src/__init__.py.in" "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" @ONLY)
 list(APPEND DIP_PYTHON_PY "${CMAKE_CURRENT_BINARY_DIR}/__init__.py")
 list(APPEND PyDIPdeps "${CMAKE_CURRENT_LIST_DIR}/src/__init__.py.in")
 update_deps_file("PyDIP_sources" "${PyDIPdeps}")
