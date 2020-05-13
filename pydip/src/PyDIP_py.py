@@ -1,6 +1,6 @@
 # PyDIP 3.0, Python bindings for DIPlib 3.0
 #
-# (c)2017-2019, Flagship Biosciences, Inc., written by Cris Luengo.
+# (c)2017-2020, Flagship Biosciences, Inc., written by Cris Luengo.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@
 The portion of the PyDIP module that contains Python code.
 """
 
-import PyDIP
+from PyDIP import PyDIP_bin
 import importlib.util
-import os.path
+import pathlib
 
 hasMatPlotLib = True
 if importlib.util.find_spec('matplotlib') is None:
@@ -37,6 +37,14 @@ else:
     import matplotlib
     import matplotlib.pyplot as pp
     import numpy as np
+
+
+hasBioFormats = True
+if importlib.util.find_spec('javabridge') is None or importlib.util.find_spec('bioformats') is None:
+    hasBioFormats = False
+else:
+    import javabridge
+    import bioformats
 
 
 # Label color map from the function of the same name in DIPimage:
@@ -67,6 +75,7 @@ def _label_colormap():
     return None
 
 
+# Using matplotlib to show an image
 def Show(img, range=(), complexMode='abs', projectionMode='mean', coordinates=(), dim1=0, dim2=1, colormap=''):
     """Show an image in the current pyplot window
 
@@ -126,7 +135,7 @@ def Show(img, range=(), complexMode='abs', projectionMode='mean', coordinates=()
     projected as described above for higher-dimensional images.
     """
     if hasMatPlotLib:
-        out = PyDIP.ImageDisplay(img, range, complexMode=complexMode, projectionMode=projectionMode, coordinates=coordinates, dim1=dim1, dim2=dim2)
+        out = PyDIP_bin.ImageDisplay(img, range, complexMode=complexMode, projectionMode=projectionMode, coordinates=coordinates, dim1=dim1, dim2=dim2)
         if out.Dimensionality() == 1:
             axes = pp.gca()
             axes.clear()
@@ -152,4 +161,137 @@ def Show(img, range=(), complexMode='abs', projectionMode='mean', coordinates=()
         pp.pause(0.001)
 
 
-PyDIP.Image.Show = Show
+PyDIP_bin.Image.Show = Show
+
+
+# Support functions for ImageReadBioFormats()
+def _DeinitBioFormats():
+    print('Killing Java VM')
+    javabridge.kill_vm()
+
+
+def _InitializeBioFormats():
+    if not hasattr(_InitializeBioFormats, "_initialized"):
+        javabridge.start_vm(class_path=bioformats.JARS, run_headless=True)
+        _InitializeBioFormats._initialized = True
+        import atexit
+        atexit.register(_DeinitBioFormats)
+        # TODO: The interpreter hangs upon exit after using Bio-Formats, whether
+        #       we register the cleanup function or not. The clean-up function
+        #       is never called.
+
+
+# A function that uses BioFormats to load images
+def ImageReadBioFormats(filename):
+    """Reads an image file using Bio-Formats.
+
+    The module 'python-bioformats' must be installed.
+    See https://pythonhosted.org/python-bioformats/.
+
+    If the installation fails while trying to build the javabridge module
+    because of a missing header file, try the following:
+    ```
+    export CFLAGS="-I`python3 -c 'import numpy;print(numpy.get_include())'`"
+    pip3 install javabridge
+    ```
+    """
+    if not hasBioFormats:
+        print("""
+PyDIP.ImageReadBioFormats requires the 'python-bioformats' module to be
+installed. You can install it by typing on your Linux/MacOS command prompt:
+    pip3 install python-bioformats
+or under Windows:
+    python3 -m pip install python-bioformats
+""")
+        raise ModuleNotFoundError('python-bioformats module required')
+    _InitializeBioFormats()
+
+    formatTools = bioformats.formatreader.make_format_tools_class()
+    dataTypeTranslator = {
+        formatTools.UINT8: 'UINT8',
+        formatTools.INT8: 'SINT8',
+        formatTools.UINT16: 'UINT16',
+        formatTools.INT16: 'SINT16',
+        formatTools.UINT32: 'UINT32',
+        formatTools.INT32: 'SINT32',
+        formatTools.FLOAT: 'SFLOAT',
+        formatTools.DOUBLE: 'DFLOAT',
+    }  # NOTE! This fails for binary images and for complex-valued images.
+       # I think this is an issue with the BioFormats-Python interface
+    with bioformats.ImageReader(filename) as reader:
+        dataType = dataTypeTranslator[reader.rdr.getPixelType()]
+        tensorElements = reader.rdr.getSizeC()
+        sizes = [reader.rdr.getSizeX(), reader.rdr.getSizeY(), reader.rdr.getSizeZ(), reader.rdr.getSizeT()]
+        out = PyDIP_bin.Image(sizes, tensorElements, dataType)
+        for t in range(sizes[3]):
+            for c in range(tensorElements):
+                for z in range(sizes[2]):
+                    out.TensorElement(c)[:, :, z, t] = reader.read(c, z, t, rescale=False)
+        # reader.close()  # closed automatically by the with... syntax.
+
+    meta = bioformats.OMEXML(bioformats.get_omexml_metadata(filename))
+    pixels = meta.image(0).Pixels
+    pixelSizes = [PyDIP_bin.PhysicalQuantity(1)]*4
+    pixelSizeX = pixels.PhysicalSizeX
+    if pixelSizeX:
+        pixelSizes[0] = PyDIP_bin.PhysicalQuantity(pixelSizeX, pixels.PhysicalSizeXUnit)
+    pixelSizeY = pixels.PhysicalSizeY
+    if pixelSizeY:
+        pixelSizes[1] = PyDIP_bin.PhysicalQuantity(pixelSizeY, pixels.PhysicalSizeYUnit)
+    pixelSizeZ = pixels.PhysicalSizeZ
+    if pixelSizeZ:
+        pixelSizes[2] = PyDIP_bin.PhysicalQuantity(pixelSizeZ, pixels.PhysicalSizeZUnit)
+    out.SetPixelSize(PyDIP_bin.PixelSize(pixelSizes))
+    if tensorElements == 3:
+        out.SetColorSpace('RGB')  # Assume a 3-channel image is RGB
+    if sizes[3] == 1:
+        out.Squeeze(3)  # Remove T dimension if singleton
+    if sizes[2] == 1:
+        out.Squeeze(2)  # Remove Z dimension if singleton
+    return out
+
+
+# A Python implementation of dip::ImageRead, so that we can use a different BioFormats interface
+def ImageRead(filename, format=""):
+    """Reads the image in a file filename.
+
+    format can be one of:
+    - `"ics"`: The file is an ICS file, use `dip.ImageReadICS`.
+    - `"tiff"`: The file is a TIFF file, use `dip.ImageReadTIFF`. Reads only
+      the first image plane.
+    - `"jpeg"`: The file is a JPEG file, use `dip.ImageReadJPEG`.
+    - `"bioformats"`: Use `dip.ImageReadBioFormats` to read the file with the
+      Bio-Formats library.
+    - `""`: Select the format by looking at the file name extension or the
+      file's first few bytes. This is the default.
+
+    If the 'python-bioformats' module is not installed (by the user, separately
+    from PyDIP), then the `"bioformats"` format will not be available.
+
+    Use the filetype-specific functions directly for more control over how the
+    image is read.
+    """
+
+    if not format:  # Note! This logic copied from dip::ImageRead() in include/diplib/simple_file_io.h
+        format = pathlib.Path(filename).suffix
+        if format:
+            format = format[1:].lower()  # remove the dot
+        if format == 'ics' or format == 'ids':
+            format = 'ics'
+        elif format == 'tif' or format == 'tiff':
+            format = 'tiff'
+        elif  format == 'jpg' or format == 'jpeg':
+            format = 'jpeg'
+        else:
+            format = 'bioformats'
+
+    if format == 'ics':
+        return PyDIP_bin.ImageReadICS(filename)
+    elif format == 'tiff':
+        return PyDIP_bin.ImageReadTIFF(filename)
+    elif format == 'jpeg':
+        return PyDIP_bin.ImageReadJPEG(filename)
+    elif hasBioFormats and format == 'bioformats':
+        return ImageReadBioFormats(filename)
+    else:
+        raise NameError('File format not recognized: ' + format)

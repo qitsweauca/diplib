@@ -130,7 +130,8 @@ void init_assorted( py::module& m ) {
    m.def( "ImageWriteJPEG", &dip::ImageWriteJPEG, "image"_a, "filename"_a, "jpegLevel"_a = 80 );
 
    // diplib/simple_file_io.h
-   m.def( "ImageRead", py::overload_cast< dip::String const&, dip::String const& >( &dip::ImageRead ), "filename"_a, "format"_a = "" );
+   //m.def( "ImageRead", py::overload_cast< dip::String const&, dip::String const& >( &dip::ImageRead ), "filename"_a, "format"_a = "" );
+   // NOTE! dip.ImageRead is pure Python code, because we're using a different BioFormats interface than in C++.
    m.def( "ImageWrite", &dip::ImageWrite, "image"_a, "filename"_a, "format"_a = "", "compression"_a = "" );
 
    // diplib/generation.h
